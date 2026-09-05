@@ -18,13 +18,27 @@ function logRawPayload(body) {
   }
 }
 
+// Shopier'in "OSB" (eski/legacy) sistemi bazen GET ile, parametreleri URL'nin
+// sonuna ekleyerek gonderiyor olabilir. Ne gelirse gelsin yakalayip loglayalim ki
+// Shopier'in hangi yontemi/alan adlarini kullandigini gorelim - test butonu
+// "basarisiz" dese bile buraya bir istek dusup dusmedigine data/webhook-debug.log'dan bakilabilir.
+router.get('/shopier-order', (req, res) => {
+  logRawPayload({ method: 'GET', query: req.query, headers: req.headers });
+  res.status(200).send('OK');
+});
+
 // Shopier'in siparis oldugunda cagiracagi adres: POST /webhook/shopier-order
 // Shopier panelinde/webhook ayarlarinda bu servisin genel adresi + bu yol tanimlanmali.
-router.post('/shopier-order', express.json({ limit: '1mb' }), async (req, res) => {
+// Hem JSON hem form-encoded (eski sistemler icin) govdeyi kabul ediyoruz.
+router.post(
+  '/shopier-order',
+  express.json({ limit: '1mb' }),
+  express.urlencoded({ extended: true, limit: '1mb' }),
+  async (req, res) => {
   // ILK YAPILACAK SEY: gelen HER siparisi ham haliyle kaydet. Ilk gercek siparis
   // geldiginde data/webhook-debug.log dosyasini acip shopierClient.parseIncomingOrder'i
   // gercek alan adlarina gore kesinlestirecegiz.
-  logRawPayload(req.body);
+  logRawPayload({ body: req.body, query: req.query });
 
   if (!verifyWebhookSignature(req)) {
     return res.status(401).json({ ok: false, error: 'imza dogrulanamadi' });
