@@ -30,7 +30,7 @@ Tarayıcıda `http://localhost:3000/admin` — kullanıcı adı/şifre `.env` do
 - **"+ Yeni Tablo Ekle"** ile bağımsız bir stok tablosu oluşturabilirsin (ör. "Sweatshirt Bedenleri" — S, M, L, XL).
 - Sağ üstteki dropdown'dan tablolar arasında geçiş yapabilir, **"✏️ Düzenle"** ile bir tablonun adını/beden listesini değiştirebilir, **"🗑️ Sil"** ile kaldırabilirsin.
 - **"Yeni tasarım ekle"** ile seçili tabloya yeni bir ürün/tasarım ekleyebilirsin (id, ad, renk, başlangıç Tasarım Stoğu).
-- Her tasarım satırının sağındaki **"🔗 Bağla"** butonuyla o tasarımı Shopier'deki gerçek ürününe bağlarsın: Shopier Ürün ID'si + her beden için Shopier Varyasyon ID'si. Bağlantı tamamlanınca buton yeşil **"🔗 Bağlı"** olur. Bu artık panelden yapılıyor — API/komut satırı gerekmiyor.
+- Her tasarım satırının sağındaki **"🔗 Bağla"** butonuyla o tasarımı Shopier'deki gerçek ürününe bağlarsın: Shopier Ürün ID'sini gir, **"🔄 Shopier'den Çek"** butonuna bas — Shopier'deki GERÇEK varyasyon ID'lerini (İncele/Inspect Element'e hiç gerek kalmadan) otomatik getirir ve mümkünse bedenleri otomatik eşleştirir; sen sadece açılan listeden doğru bedeni seçip kontrol edersin. Bağlantı tamamlanınca buton yeşil **"🔗 Bağlı"** olur.
 - **"Test satışı"** ile Shopier'e hiç bağlanmadan bir satış simüle edip aynı tablodaki tüm tasarımların o bedeninin birlikte düştüğünü görebilirsin.
 - Üstteki "Toplam (ortak havuz)" satırı ve her tasarımın "Tasarım Stoğu" hücresi elle güncellenebilir (✏️ gerçek stok); diğer tüm hücreler otomatik hesaplanır ve salt okunur (🔒 sitede görünen).
 - **Gerçek stoğu buraya girersin, Shopier'i bu servis günceller**: yeni baskı aldığında/tişört stoğu değiştiğinde ilgili hücreyi değiştirip Enter'a basman/başka yere tıklaman yeterli — hesaplanan yeni "sitede görünen" değer, eşleştirdiğin tüm Shopier varyasyonlarına o an otomatik gönderilir (satış beklemeye gerek yok). Panelde ayrıca **"🔄 Tümünü Shopier'e Gönder"** butonu var — mesela yeni bir tasarımı eşleştirdikten hemen sonra, o tablodaki her şeyi tek seferde Shopier'e (yeniden) göndermek için kullanılır.
@@ -40,25 +40,24 @@ Servis kurulunca otomatik olarak senin ilk gönderdiğin tablo (9 tasarım, 5 be
 
 `.env` içindeki `DRY_RUN=true` kaldığı sürece **Shopier'e hiçbir istek atılmaz** — sadece ne gönderileceği konsola loglanır. Sistemi Shopier'e bağlamadan önce güvenle deneyebilirsin.
 
-## Shopier tarafında tamamlanması gereken şeyler
+## Shopier tarafıyla ilgili artık NETLEŞEN her şey
 
-Shopier'in geliştirici dokümantasyonundan (Ahmet'in kendi hesabından erişip aktardığı bilgilerle) netleşenler:
+Shopier'in resmi developer.shopier.com dokümantasyonundan (tam OpenAPI şeması) doğrulandı:
 
-1. **Webhook aboneliği bir API çağrısıyla oluşturuluyor**, OSB'deki gibi tek bir "Bildirim URL" kutusuna yapıştırıp kaydetmek yeterli değil. Kişisel Erişim Anahtarı (PAT) kullanan hesaplar için "webhook aboneliği oluşturma" adında ayrı bir uç nokta var — tam adresi/gövdesi henüz netleşmedi, Ahmet'in developer.shopier.com'daki ilgili sayfayı bulup paylaşması gerekiyor. Abonelik oluşturulunca dönen `token` alanı, aşağıdaki imza doğrulaması için `SHOPIER_ORDER_WEBHOOK_SECRET`'a girilecek (bu token SADECE oluşturma anındaki cevapta bir kez veriliyor, kaybedilirse abonelik silinip yeniden oluşturulmalı).
-2. **Sipariş webhook'unun tam JSON şeması** (ürün id, varyasyon id, adet, sipariş no hangi alan adlarıyla geliyor) hâlâ netleşmedi — gerçek bir sipariş/test tetiklenip `data/webhook-debug.log` incelenerek çözülecek.
-3. **Stok güncelleme endpoint'i**: tam adres, HTTP metodu, gönderilecek JSON şeması hâlâ netleşmedi.
+1. **Webhook aboneliği bir API çağrısıyla oluşturuluyor** (`POST /webhooks`, gövde `{event, url}`), OSB'deki gibi tek bir "Bildirim URL" kutusuna yapıştırıp kaydetmek yeterli değil. Abonelik oluşturulunca dönen `token` alanı imza doğrulaması için `SHOPIER_ORDER_WEBHOOK_SECRET`'a girilir (bu token SADECE oluşturma anındaki cevapta bir kez veriliyor, kaybedilirse abonelik silinip yeniden oluşturulmalı).
+2. **Sipariş webhook'unun tam JSON şeması** gerçek bir siparişle doğrulandı: `body.id` (sipariş no), `body.lineItems[].productId` (ürün id), `body.lineItems[].selection[0].id` (varyasyon/beden id'si — "selection id"), `body.lineItems[].quantity` (adet).
+3. **Stok güncelleme**: Shopier'de ayrı bir "stok güncelle" endpoint'i yok. `GET /products/{id}` o ürünün TÜM varyasyonlarını (`selectionId`, `selectionTitle` — ör. "3-4 Yaş" — ve `stockQuantity` ile) döndürüyor; `PUT /products/{id}` ile de güncelleniyor (tüm varyasyon listesini geri gönderiyoruz, sadece hedef olanın `stockQuantity`'sini değiştirerek — diğerlerini kaybetmemek için). Bu servis bunu otomatik yapıyor.
+
+**Kritik bir bulgu:** Shopier panelinde ürün üzerinde sağ tık → "İncele"/Inspect Element ile bulunan varyasyon ID'si, API'nin kullandığı gerçek `selectionId` ile **AYNI DEĞİL**. Bu yüzden mapping ekranında artık ID'yi elle kopyalamak yerine **"🔄 Shopier'den Çek"** butonu var — bu, `GET /products/{id}` ile Shopier'den doğru ID+başlık eşlemesini doğrudan çekip listeler; sen sadece doğru bedeni seçersin. Daha önce İncele ile girilmiş olan eşleştirmeler (varsa) bu yöntemle tekrar kontrol edilip düzeltilmeli.
 
 **Öğrendiğimiz önemli bir kural:** Shopier, webhook'a **5 saniye içinde 200 OK** dönmezsen bildirimi başarısız sayıp 1dk/10dk/1sa/2sa/4sa/8sa/24sa/48sa/72sa arayla toplam 9 kez tekrar deniyor. Bunu iki şekilde hesaba kattık: (1) sunucu, gelen siparişi önce kendi veritabanında (çok hızlı) işleyip Shopier'e hemen 200 OK dönüyor, Shopier'e geri yazma işlemini cevaptan SONRA arka planda yapıyor — böylece yavaş bir dış istek yüzünden "başarısız" sayılmıyor; (2) bu tekrar deneme mekanizması, sunucunun bir an için yavaş/uykuda olması ihtimaline karşı da ekstra bir güvenlik ağı sağlıyor.
 
-**En pratik yol:** Servisi canlıya al (DRY_RUN açıkken zararsız), webhook aboneliğini/adresini `https://<sunucu-adresin>/webhook/shopier-order` olarak tanımla, gerçek (ya da test) bir sipariş tetikle. Gelen ham veri otomatik olarak `data/webhook-debug.log`'a kaydediliyor (GET, POST/JSON, POST/form-encoded — hangisi gelirse gelsin yakalanıyor) — o dosyayı bana gönderirsen `src/shopierClient.js` içindeki TODO'ları tamamlarım. Bunlar netleşene kadar sistem hiçbir şeyi bozmaz — sadece Shopier'e yazmaz, her şeyi loglar.
-
 ## Kurulum adımları (senin yapman gerekenler)
 
-1. Shopier panelinde her tasarım-ürün için **ürün id**'sini ve her bedenin **varyasyon id**'sini bul (ürün düzenleme ekranındaki linkte/varyasyon listesinde görünür).
-2. Bu servisin admin panelinde her tasarımın satırındaki **"🔗 Bağla"** butonuna tıkla, açılan pencereye Shopier Ürün ID'sini ve her bedenin Varyasyon ID'sini gir, Kaydet'e bas. (Artık API/komut satırı gerekmiyor — hepsi panelden.)
-3. `.env` dosyasına `SHOPIER_ACCESS_KEY`'i gir.
-4. Webhook/stok güncelleme detayları netleşince `SHOPIER_API_BASE`, `SHOPIER_STOCK_UPDATE_PATH` doldurulur, `src/shopierClient.js` tamamlanır.
-5. `DRY_RUN=false` yapılır, canlıya alınır.
+1. `.env` dosyasına `SHOPIER_ACCESS_KEY`'i gir (Shopier panelinden Kişisel Erişim Anahtarı).
+2. Bu servisin admin panelinde her tasarımın satırındaki **"🔗 Bağla"** butonuna tıkla, Shopier Ürün ID'sini gir, **"🔄 Shopier'den Çek"**'e bas, açılan listelerden her bedenin doğru karşılığını seç, Kaydet'e bas. (İncele/Inspect Element'e hiç gerek yok, elle ID kopyalama hatası riski ortadan kalktı.)
+3. Webhook aboneliğini `https://<sunucu-adresin>/webhook/shopier-order` adresine kurup dönen `token`'ı `SHOPIER_ORDER_WEBHOOK_SECRET`'a gir.
+4. Tüm tasarımlar eşleştikten sonra `DRY_RUN=false` yapılır, canlıya alınır — panelden bir test girişiyle Shopier'e gerçekten yazdığını doğrula.
 
 ## Render.com'a dağıtım
 
