@@ -1,69 +1,140 @@
 // Bu dosya Shopier ile konusan TEK yer. Boylece gercek endpoint/alan adlari netlesince
 // sadece burasi degisecek, stockEngine.js ve webhook.js'e dokunmaya gerek kalmayacak.
 //
-// SU AN NETLESMEYEN 2 SEY (Ahmet'in Shopier developer portalindan teyit etmesi lazim):
-//   1) Siparis webhook'unun (Otomatik Siparis Bildirimi / Webhooks) tam JSON semasi
-//      -> parseIncomingOrder() icindeki alan adlarini o zaman kesinlestiririz.
-//   2) Bir varyasyonun stogunu API ile guncelleme endpoint'i + govde semasi
-//      -> pushVariantStock() icindeki TODO'yu o zaman kesinlestiririz.
-// Bu ikisi netlesene kadar DRY_RUN=true birakilirsa sistem CANLI Shopier'e hicbir
-// istek atmaz, sadece ne yapacagini loglar - is mantigini test etmek icin yeterli.
+// ARTIK TAMAMEN NETLESTI (developer.shopier.com'un tam OpenAPI semasi Ahmet tarafindan
+// "Copy Page" ile getirildi):
+//   - Taban adres: https://api.shopier.com/v1/
+//   - Kimlik dogrulama: Authorization: Bearer <Kisisel Erisim Anahtari> (bearerAuth)
+//   - GET /webhooks, POST /webhooks, DELETE /webhooks/{id} -> webhook aboneligi yonetimi
+//   - GET /products/{id} -> tek bir urunun TUM varyasyonlarini (variants[]) doner. Her
+//     varyasyonda: selectionId (array, bizde tek elemanli - sadece "beden" boyutu var),
+//     selectionTitle (array, ayni sirada - ornegin ["3-4 Yaş"]), stockQuantity.
+//     ONEMLI: Bu sayede varyasyon ID'lerini artik "İncele" ile elle bulmaya HIC gerek yok -
+//     urun id'sini bilince, Shopier'in kendisinden dogru ID+baslik eslesmesini cekebiliyoruz.
+//   - PUT /products/{id} -> urunu gunceller. Govdede "variants" alani gonderilirse urunun
+//     TUM varyasyon listesini degistirir - bu yuzden stok guncellerken ONCE GET ile mevcut
+//     TUM varyasyonlari cekip, SADECE hedef varyasyonun stockQuantity'sini degistirip,
+//     TUM listeyi geri PUT ediyoruz (yoksa diger bedenlerin varyasyonlarini kaybederiz).
+//   - Webhook nesnesi: { id, event, url, token } - token SADECE olusturma cevabinda bir kez donuyor
+//
+// DRY_RUN=true iken sistem CANLI Shopier'e hicbir yazma istegi atmaz (GET/okuma istekleri
+// haric - varyasyon listesini cekmek her zaman calisir, sadece PUT ile yazma engellenir).
 
 const DRY_RUN = String(process.env.DRY_RUN || 'true').toLowerCase() !== 'false';
-const API_BASE = process.env.SHOPIER_API_BASE || 'https://api.shopier.com';
-const STOCK_UPDATE_PATH = process.env.SHOPIER_STOCK_UPDATE_PATH || '';
+const API_BASE = process.env.SHOPIER_API_BASE || 'https://api.shopier.com/v1';
 const ACCESS_KEY = process.env.SHOPIER_ACCESS_KEY || '';
 
-/**
- * Shopier'den gelen siparis webhook govdesini {shopierProductId, shopierVariantId, qty, orderRef} listesine cevirir.
- * NOT: Alan adlari (product_id, variant_id, quantity ...) TAHMINI - gercek payload'i gorunce
- * duzeltilmesi gerekiyor. Bu yuzden webhook.js, ham govdeyi HER ZAMAN data/webhook-debug.log'a
- * yaziyor: ilk gercek siparis geldiginde o dosyayi acip buradaki eslemeyi tek seferde kesinlestiririz.
- */
-function parseIncomingOrder(body) {
-  // Yaygin e-ticaret webhook sekillerine gore en olasi yapi varsayildi.
-  const items = body.items || body.products || body.line_items || [];
-  const orderRef = body.order_id || body.orderId || body.order_number || null;
-
-  return items.map((item) => ({
-    shopierProductId: String(item.product_id ?? item.productId ?? ''),
-    shopierVariantId: String(item.variant_id ?? item.variantId ?? item.variation_id ?? ''),
-    qty: Number(item.quantity ?? item.qty ?? 1),
-    orderRef,
-  }));
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${ACCESS_KEY}`,
+  };
 }
 
 /**
- * Tek bir varyasyonun stogunu Shopier'da gercek deger ile esitler.
- * TODO: STOCK_UPDATE_PATH ve govde (body) semasi developer portaldan teyit edilince doldurulacak.
+ * Bir urunun Shopier'daki GUNCEL halini (tum varyasyonlariyla) ceker.
+ * DRY_RUN'dan BAGIMSIZ calisir - bu sadece okuma, hicbir sey degistirmiyor.
+ * Donen: { raw: <ham Shopier urun objesi>, variants: [{selectionId, selectionTitle, stockQuantity}] }
+ * NOT: selectionId/selectionTitle Shopier'da array olarak geliyor (coklu secim boyutu
+ * icin) - bizde tek boyut (beden) oldugu icin ilk elemani aliyoruz.
  */
-async function pushVariantStock({ shopierVariantId, newStock }) {
+async function fetchProduct(shopierProductId) {
+  if (!ACCESS_KEY) throw new Error('SHOPIER_ACCESS_KEY tanimli degil (.env dosyasina gir).');
+  if (!shopierProductId) throw new Error('shopierProductId gerekli.');
+
+  const url = `${API_BASE}/products/${encodeURIComponent(shopierProductId)}`;
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Shopier urun okuma hatasi (${res.status}): ${text}`);
+  }
+  const raw = await res.json();
+  const variants = (raw.variants || []).map((v) => ({
+    selectionId: Array.isArray(v.selectionId) ? v.selectionId[0] : v.selectionId,
+    selectionTitle: Array.isArray(v.selectionTitle) ? v.selectionTitle[0] : v.selectionTitle,
+    stockQuantity: v.stockQuantity,
+  }));
+  return { raw, variants };
+}
+
+/**
+ * Shopier'den gelen siparis webhook govdesini {shopierProductId, shopierVariantId, qty, orderRef} listesine cevirir.
+ * NETLESTI (gercek "order.created" webhook'undan alinan ornek ile): govde su sekilde geliyor:
+ *   { id: "784630780", lineItems: [
+ *       { productId: "50115452", quantity: 1,
+ *         selection: [ { id: "097613d2b7a41249", title: "3-4 Yaş", variationTitle: "Çocuk Tişört Beden" } ] }
+ *   ], ... }
+ * Yani: siparis id'si -> body.id, urun id'si -> lineItems[].productId,
+ * beden/varyasyon id'si -> lineItems[].selection[0].id (adminde "Bağla" ile girilen Varyasyon ID budur),
+ * adet -> lineItems[].quantity (selection basina degil, satir basina).
+ * Birden fazla secim boyutu olan urunler icin (bizde olmuyor ama garanti olsun diye)
+ * tum selection id'leri '|' ile birlestiriliyor.
+ */
+function parseIncomingOrder(body) {
+  const orderRef = body.id || body.order_id || body.orderId || null;
+  const lineItems = body.lineItems || body.line_items || body.items || [];
+
+  const results = [];
+  for (const item of lineItems) {
+    const productId = String(item.productId ?? item.product_id ?? '');
+    const qty = Number(item.quantity ?? item.qty ?? 1);
+    const selections = item.selection || item.selections || [];
+
+    if (!selections.length) continue; // bedeni olmayan/varyasyonsuz urun - bizim sistemde yonetilmiyor
+
+    const variantId = selections.map((s) => String(s.id ?? '')).join('|');
+    results.push({ shopierProductId: productId, shopierVariantId: variantId, qty, orderRef });
+  }
+  return results;
+}
+
+/**
+ * Tek bir varyasyonun (selection) stogunu Shopier'da gercek deger ile esitler.
+ * NETLESTI: Shopier'da ayri bir "stok guncelleme" endpoint'i yok - PUT /products/{id}
+ * ile urunun TUM varyasyon listesi gonderiliyor. Bu yuzden:
+ *   1) Once GET ile urunun GUNCEL tum varyasyonlarini cekiyoruz (baska bir yerden - ornegin
+ *      Shopier panelinden elle - degismis olabilecek diger varyasyonlari EZMEMEK icin).
+ *   2) Sadece hedef selectionId'nin stockQuantity'sini degistiriyoruz.
+ *   3) TUM varyasyon listesini (digerleri aynen, hedef degismis) geri PUT ediyoruz.
+ * shopierProductId + shopierVariantId (selectionId) ikisi de sart.
+ */
+async function pushVariantStock({ shopierProductId, shopierVariantId, newStock }) {
+  if (!shopierProductId) {
+    return { ok: false, skipped: true, reason: 'shopier_product_id eslesmesi yok (admin panelden tanimla)' };
+  }
   if (!shopierVariantId) {
-    return { ok: false, skipped: true, reason: 'shopier_variant_id eslesmesi yok (admin panelden tanimla)' };
+    return { ok: false, skipped: true, reason: 'shopier_variant_id (selection id) eslesmesi yok (admin panelden tanimla)' };
   }
 
   if (DRY_RUN) {
-    console.log(`[DRY_RUN] Shopier varyasyon ${shopierVariantId} stogu ${newStock} olarak guncellenecekti.`);
+    console.log(
+      `[DRY_RUN] Shopier urun ${shopierProductId} / varyasyon ${shopierVariantId} stogu ${newStock} olarak guncellenecekti.`
+    );
     return { ok: true, dryRun: true };
   }
 
-  if (!ACCESS_KEY || !STOCK_UPDATE_PATH) {
+  if (!ACCESS_KEY) {
+    throw new Error('SHOPIER_ACCESS_KEY tanimli degil. .env dosyasini doldurmadan DRY_RUN=false yapma.');
+  }
+
+  const { variants } = await fetchProduct(shopierProductId);
+  const target = variants.find((v) => String(v.selectionId) === String(shopierVariantId));
+  if (!target) {
     throw new Error(
-      'SHOPIER_ACCESS_KEY veya SHOPIER_STOCK_UPDATE_PATH tanimli degil. .env dosyasini doldurmadan DRY_RUN=false yapma.'
+      `Shopier urun ${shopierProductId} icinde selectionId=${shopierVariantId} olan bir varyasyon bulunamadi - eslestirme yanlis olabilir.`
     );
   }
 
-  const url = `${API_BASE}${STOCK_UPDATE_PATH}`;
+  const updatedVariants = variants.map((v) => ({
+    selectionId: [v.selectionId],
+    stockQuantity: String(v.selectionId) === String(shopierVariantId) ? Math.max(0, Number(newStock) || 0) : v.stockQuantity,
+  }));
+
+  const url = `${API_BASE}/products/${encodeURIComponent(shopierProductId)}`;
   const res = await fetch(url, {
-    method: 'POST', // TODO: gercek metod PATCH/PUT olabilir, portaldan teyit et
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${ACCESS_KEY}`, // TODO: gercek auth header formatini teyit et
-    },
-    body: JSON.stringify({
-      variant_id: shopierVariantId, // TODO: gercek alan adini teyit et
-      stock: newStock, // TODO: gercek alan adini teyit et
-    }),
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify({ variants: updatedVariants }),
   });
 
   if (!res.ok) {
@@ -104,4 +175,4 @@ function verifyWebhookSignature(req) {
   return provided === computedHex || provided === computedBase64;
 }
 
-module.exports = { parseIncomingOrder, pushVariantStock, verifyWebhookSignature, DRY_RUN };
+module.exports = { parseIncomingOrder, pushVariantStock, verifyWebhookSignature, fetchProduct, DRY_RUN };

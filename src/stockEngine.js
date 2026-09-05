@@ -153,6 +153,19 @@ function findDesignByShopierProductId(shopierProductId) {
   return db.prepare('SELECT * FROM designs WHERE shopier_product_id = ?').get(shopierProductId);
 }
 
+// Bir (tasarim, beden) hucresini Shopier'e push edebilmek icin gereken IKI bilgiyi
+// (urun id + varyasyon/selection id) tek yerden getirir. pushVariantStock artik
+// urunun TUM varyasyonlarini GET edip icinden dogru olani guncelledigi icin
+// shopierProductId da sart oldu.
+function getShopierTarget(designId, sizeKey) {
+  const design = getDesign(designId);
+  const mapping = getVariantMapping(designId, sizeKey);
+  return {
+    shopierProductId: design ? design.shopier_product_id : null,
+    shopierVariantId: mapping ? mapping.shopier_variant_id : null,
+  };
+}
+
 // ---------------------------------------------------------------------
 // HESAPLAMA
 // ---------------------------------------------------------------------
@@ -259,6 +272,53 @@ function applyDelta(designId, sizeKey, signedQty, meta = {}) {
   };
 }
 
+// ---------------------------------------------------------------------
+// ELLE DUZENLEME SONRASI SHOPIER'E GONDERILECEK HUCRELERI TOPLAMA
+// (satis degil - "gercek stogu elle guncelledim, Shopier'deki gorunen
+// stok da yenilensin" durumu icin)
+// ---------------------------------------------------------------------
+
+// Bir tablonun bir bedeninin ortak stogu elle degistirildiginde, o tabloya
+// bagli TUM tasarimlarin o bedeni etkilenir.
+function cellsForPoolSize(poolId, sizeKey) {
+  const sizeRow = db.prepare('SELECT * FROM pool_sizes WHERE pool_id = ? AND size_key = ?').get(poolId, sizeKey);
+  if (!sizeRow) return [];
+  return getDesigns(poolId).map((d) => ({
+    designId: d.id,
+    sizeKey,
+    effectiveStock: Math.max(0, Math.min(sizeRow.shared_stock, d.design_stock)),
+  }));
+}
+
+// Bir tasarimin kendi Tasarim Stogu elle degistirildiginde, o tasarimin
+// TUM bedenleri etkilenir (baska tasarimlar etkilenmez).
+function cellsForDesign(designId) {
+  const design = getDesign(designId);
+  if (!design || !design.pool_id) return [];
+  return getPoolSizes(design.pool_id).map((s) => ({
+    designId,
+    sizeKey: s.size_key,
+    effectiveStock: Math.max(0, Math.min(s.shared_stock, design.design_stock)),
+  }));
+}
+
+// Bir tablodaki TUM hucreler - "Tumunu Shopier'e Gonder" butonu icin.
+function cellsForPool(poolId) {
+  const pool = getPool(poolId);
+  if (!pool) return [];
+  const cells = [];
+  for (const d of getDesigns(poolId)) {
+    for (const s of pool.sizes) {
+      cells.push({
+        designId: d.id,
+        sizeKey: s.size_key,
+        effectiveStock: Math.max(0, Math.min(s.shared_stock, d.design_stock)),
+      });
+    }
+  }
+  return cells;
+}
+
 module.exports = {
   getPools,
   getPool,
@@ -276,7 +336,11 @@ module.exports = {
   setVariantMapping,
   getVariantMapping,
   findDesignByShopierProductId,
+  getShopierTarget,
   effectiveStock,
   getStockTable,
   applyDelta,
+  cellsForPoolSize,
+  cellsForDesign,
+  cellsForPool,
 };
