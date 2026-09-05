@@ -1,0 +1,18 @@
+{
+  "name": "shopier-stok-sync",
+  "version": "0.1.0",
+  "description": "Miras Cocuk / Sahan Baski icin paylasimli beden stogu senkronizasyon servisi (Shopier)",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node src/seed.js",
+    "test:engine": "node src/stockEngine.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
