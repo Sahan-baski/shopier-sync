@@ -43,11 +43,18 @@ router.post(
   (req, res) => {
   // ILK YAPILACAK SEY: gelen HER siparisi ham haliyle kaydet. Ilk gercek siparis
   // geldiginde data/webhook-debug.log dosyasini acip shopierClient.parseIncomingOrder'i
-  // gercek alan adlarina gore kesinlestirecegiz.
-  logRawPayload({ body: req.body, query: req.query });
+  // gercek alan adlarina gore kesinlestirecegiz. Header'lari da logluyoruz ki
+  // Shopier-Signature'in tam adini/formatini (hex mi base64 mu) buradan teyit edebilelim.
+  logRawPayload({ body: req.body, query: req.query, headers: req.headers });
 
-  if (!verifyWebhookSignature(req)) {
-    return res.status(401).json({ ok: false, error: 'imza dogrulanamadi' });
+  // GECICI OLARAK IMZA DOGRULAMASI BLOKE ETMIYOR - sadece uyarı logluyoruz.
+  // Sebep: Shopier-Signature'in tam header adi/kodlamasi (hex/base64) henuz canli bir
+  // ornekle dogrulanmadi. Yanlislikla gercek siparisleri 401 ile reddedip stok
+  // senkronunu kacirmaktansa, once birkac gercek sipariste dogrulamanin sonucunu
+  // logluyoruz; tutarli sekilde basarili oldugunu gorunce burayi tekrar sıkılaştiririz.
+  const signatureOk = verifyWebhookSignature(req);
+  if (!signatureOk) {
+    console.warn('UYARI: webhook imzasi dogrulanamadi (siparis yine de islenecek) - headers:', JSON.stringify(req.headers));
   }
 
   let items;
@@ -105,10 +112,9 @@ router.post(
   // Burada bir hata olsa bile webhook cevabini etkilemez - sadece loglanir.
   (async () => {
     for (const cell of cellsToPush) {
-      const variantMapping = engine.getVariantMapping(cell.designId, cell.sizeKey);
-      const shopierVariantId = variantMapping && variantMapping.shopier_variant_id;
+      const target = engine.getShopierTarget(cell.designId, cell.sizeKey);
       try {
-        await pushVariantStock({ shopierVariantId, newStock: cell.effectiveStock });
+        await pushVariantStock({ ...target, newStock: cell.effectiveStock });
       } catch (e) {
         console.error('Webhook sonrasi Shopier push hatasi:', cell, e.message);
       }

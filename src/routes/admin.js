@@ -1,6 +1,6 @@
 const express = require('express');
 const engine = require('../stockEngine');
-const { pushVariantStock, DRY_RUN } = require('../shopierClient');
+const { pushVariantStock, fetchProduct, DRY_RUN } = require('../shopierClient');
 
 const router = express.Router();
 router.use(express.json());
@@ -44,11 +44,8 @@ router.post('/test-sale', async (req, res) => {
     if (outcome.skipped) return res.status(400).json({ ok: false, error: outcome.reason });
 
     for (const cell of outcome.cellsToPush) {
-      const mapping = engine.getVariantMapping(cell.designId, cell.sizeKey);
-      await pushVariantStock({
-        shopierVariantId: mapping && mapping.shopier_variant_id,
-        newStock: cell.effectiveStock,
-      }).catch(() => {});
+      const target = engine.getShopierTarget(cell.designId, cell.sizeKey);
+      await pushVariantStock({ ...target, newStock: cell.effectiveStock }).catch(() => {});
     }
     res.json({ ok: true, outcome });
   } catch (e) {
@@ -56,10 +53,44 @@ router.post('/test-sale', async (req, res) => {
   }
 });
 
-// Bir tablonun bir bedeninin ortak stogunu elle duzelt
-router.post('/pools/:poolId/sizes/:sizeKey', (req, res) => {
-  engine.setPoolSharedStock(Number(req.params.poolId), req.params.sizeKey, req.body.sharedStock);
-  res.json({ ok: true });
+// Bir tablonun bir bedeninin ortak stogunu elle duzelt.
+// Bu, o bedeni paylasan TUM tasarimlari etkiler - hepsini Shopier'e de gonderiyoruz.
+router.post('/pools/:poolId/sizes/:sizeKey', async (req, res) => {
+  const poolId = Number(req.params.poolId);
+  const sizeKey = req.params.sizeKey;
+  engine.setPoolSharedStock(poolId, sizeKey, req.body.sharedStock);
+
+  const cells = engine.cellsForPoolSize(poolId, sizeKey);
+  const pushResults = [];
+  for (const cell of cells) {
+    const target = engine.getShopierTarget(cell.designId, cell.sizeKey);
+    const r = await pushVariantStock({ ...target, newStock: cell.effectiveStock }).catch((e) => ({
+      ok: false,
+      error: e.message,
+    }));
+    pushResults.push({ cell, ...r });
+  }
+  res.json({ ok: true, pushResults });
+});
+
+// Secili tablodaki TUM hucreleri Shopier'e (yeniden) gonder.
+// Ilk kurulumdan sonra ya da "emin olmak icin hepsini yenile" istediginde kullanilir.
+router.post('/pools/:poolId/sync-to-shopier', async (req, res) => {
+  const poolId = Number(req.params.poolId);
+  const cells = engine.cellsForPool(poolId);
+  let pushed = 0;
+  let skipped = 0;
+  const details = [];
+  for (const cell of cells) {
+    const target = engine.getShopierTarget(cell.designId, cell.sizeKey);
+    const r = await pushVariantStock({ ...target, newStock: cell.effectiveStock }).catch((e) => ({
+      ok: false,
+      error: e.message,
+    }));
+    if (r && r.ok) pushed++; else skipped++;
+    details.push({ cell, ...r });
+  }
+  res.json({ ok: true, pushed, skipped, total: cells.length, details });
 });
 
 // Yeni tasarim ekle
@@ -74,10 +105,21 @@ router.post('/designs', (req, res) => {
   }
 });
 
-// Tasarimin stogunu / hangi tabloya bagli oldugunu / shopier urun id'sini guncelle
-router.post('/designs/:designId', (req, res) => {
+// Tasarimin stogunu / hangi tabloya bagli oldugunu / shopier urun id'sini guncelle.
+// designStock degisiyorsa, bu tasarimin TUM bedenlerini Shopier'e de gonderiyoruz.
+router.post('/designs/:designId', async (req, res) => {
+  let pushResults = [];
   if (req.body.designStock !== undefined) {
     engine.setDesignStock(req.params.designId, req.body.designStock);
+    const cells = engine.cellsForDesign(req.params.designId);
+    for (const cell of cells) {
+      const target = engine.getShopierTarget(cell.designId, cell.sizeKey);
+      const r = await pushVariantStock({ ...target, newStock: cell.effectiveStock }).catch((e) => ({
+        ok: false,
+        error: e.message,
+      }));
+      pushResults.push({ cell, ...r });
+    }
   }
   if (req.body.poolId !== undefined) {
     engine.setDesignPool(req.params.designId, req.body.poolId ? Number(req.body.poolId) : null);
@@ -87,13 +129,26 @@ router.post('/designs/:designId', (req, res) => {
       .db.prepare('UPDATE designs SET shopier_product_id = ? WHERE id = ?')
       .run(req.body.shopierProductId, req.params.designId);
   }
-  res.json({ ok: true });
+  res.json({ ok: true, pushResults });
 });
 
 // Tasarim + beden -> Shopier varyasyon id eslemesi
 router.post('/designs/:designId/variants/:sizeKey', (req, res) => {
   engine.setVariantMapping(req.params.designId, req.params.sizeKey, req.body.shopierVariantId);
   res.json({ ok: true });
+});
+
+// Verilen Shopier Urun ID'sinin GERCEK varyasyonlarini (selectionId + selectionTitle,
+// ornegin "097613d2b7a41249" + "3-4 Yaş") Shopier'den canli ceker. Boylece admin panelde
+// "İncele" ile elle ID kopyalamaya hic gerek kalmiyor - kullanici sadece dogru basligi
+// (bedeni) secer, ID'yi biz dogrudan Shopier'in kendisinden aliyoruz.
+router.get('/shopier/products/:productId/variants', async (req, res) => {
+  try {
+    const { variants } = await fetchProduct(req.params.productId);
+    res.json({ ok: true, variants });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
 });
 
 module.exports = router;
