@@ -74,14 +74,34 @@ async function pushVariantStock({ shopierVariantId, newStock }) {
 }
 
 /**
- * (Opsiyonel) Webhook'un gercekten Shopier'den geldigini dogrulamak icin imza kontrolu.
- * Shopier'in imzalama yontemi netlesene kadar SHOPIER_ORDER_WEBHOOK_SECRET bossa dogrulama atlanir.
+ * Webhook'un gercekten Shopier'den geldigini dogrulamak icin imza kontrolu.
+ * Shopier dokumantasyonuna gore: her webhook govdesi (payload), webhook aboneligi
+ * OLUSTURULURKEN bir kereye mahsus donen "webhook token"i kullanilarak HS256
+ * (HMAC-SHA256) ile imzalaniyor ve sonuc "Shopier-Signature" header'inda geliyor.
+ * O token'i SHOPIER_ORDER_WEBHOOK_SECRET olarak .env'e girince dogrulama devreye girer.
+ *
+ * NOT: imzanin hex mi yoksa base64 mi encode edildigi dokumantasyonda acikca
+ * yazmiyordu - burada once hex deniyoruz, tutmazsa (gercek bir bildirimde surekli
+ * "dogrulanamadi" hatasi alirsak) base64'e ceviririz. req.rawBody, webhook.js'te
+ * express.json() 'verify' callback'i ile dolduruluyor (JSON.stringify ile yeniden
+ * uretilen govde degil, Shopier'in gonderdigi TAM ham bayt dizisi olmasi sart -
+ * aksi halde imza hicbir zaman tutmaz).
  */
 function verifyWebhookSignature(req) {
   const secret = process.env.SHOPIER_ORDER_WEBHOOK_SECRET;
-  if (!secret) return true; // henuz netlesmedi - simdilik gecir
-  // TODO: gercek imza header'i ve algoritmasi netlesince burada dogrulama yapilacak.
-  return true;
+  if (!secret) return true; // token henuz .env'e girilmedi - simdilik dogrulamayi atla
+
+  const signatureHeader = req.headers['shopier-signature'] || req.headers['x-shopier-signature'];
+  if (!signatureHeader) return false; // secret tanimli ama Shopier imza gondermemis - suphelİ
+
+  if (!req.rawBody) return false; // ham govde yakalanamadiysa dogrulama yapilamaz
+
+  const crypto = require('crypto');
+  const computedHex = crypto.createHmac('sha256', secret).update(req.rawBody).digest('hex');
+  const computedBase64 = crypto.createHmac('sha256', secret).update(req.rawBody).digest('base64');
+
+  const provided = String(signatureHeader).trim();
+  return provided === computedHex || provided === computedBase64;
 }
 
 module.exports = { parseIncomingOrder, pushVariantStock, verifyWebhookSignature, DRY_RUN };
