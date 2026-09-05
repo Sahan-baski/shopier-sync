@@ -33,20 +33,24 @@ Tarayıcıda `http://localhost:3000/admin` — kullanıcı adı/şifre `.env` do
 - Her tasarım satırının sağındaki **"🔗 Bağla"** butonuyla o tasarımı Shopier'deki gerçek ürününe bağlarsın: Shopier Ürün ID'si + her beden için Shopier Varyasyon ID'si. Bağlantı tamamlanınca buton yeşil **"🔗 Bağlı"** olur. Bu artık panelden yapılıyor — API/komut satırı gerekmiyor.
 - **"Test satışı"** ile Shopier'e hiç bağlanmadan bir satış simüle edip aynı tablodaki tüm tasarımların o bedeninin birlikte düştüğünü görebilirsin.
 - Üstteki "Toplam (ortak havuz)" satırı ve her tasarımın "Tasarım Stoğu" hücresi elle güncellenebilir (✏️ gerçek stok); diğer tüm hücreler otomatik hesaplanır ve salt okunur (🔒 sitede görünen).
+- **Gerçek stoğu buraya girersin, Shopier'i bu servis günceller**: yeni baskı aldığında/tişört stoğu değiştiğinde ilgili hücreyi değiştirip Enter'a basman/başka yere tıklaman yeterli — hesaplanan yeni "sitede görünen" değer, eşleştirdiğin tüm Shopier varyasyonlarına o an otomatik gönderilir (satış beklemeye gerek yok). Panelde ayrıca **"🔄 Tümünü Shopier'e Gönder"** butonu var — mesela yeni bir tasarımı eşleştirdikten hemen sonra, o tablodaki her şeyi tek seferde Shopier'e (yeniden) göndermek için kullanılır.
 - **Ne almam lazım, ne bitmiş görürsün**: bir hücre 0'a inince kırmızı, 3 ve altına inince turuncu renkte vurgulanıyor — hem ortak beden stoğunda hem Tasarım Stoğu'nda. Panele her baktığında hangi bedeni/tasarımı yenilemen gerektiğini bir bakışta görürsün, ayrıca bir yere not almana gerek yok.
 
 Servis kurulunca otomatik olarak senin ilk gönderdiğin tablo (9 tasarım, 5 beden) "Çocuk Tişört Bedenleri" adıyla seed edilmiş halde geliyor — sıfırdan girmene gerek yok.
 
 `.env` içindeki `DRY_RUN=true` kaldığı sürece **Shopier'e hiçbir istek atılmaz** — sadece ne gönderileceği konsola loglanır. Sistemi Shopier'e bağlamadan önce güvenle deneyebilirsin.
 
-## Shopier tarafında tamamlanması gereken 2 şey (değişmedi)
+## Shopier tarafında tamamlanması gereken şeyler
 
-Shopier'in **Kişisel Erişim Anahtarı** ile çalışan resmi bir API'si var ve üçüncü parti araçlar (ör. Jet Stok) bunu kullanarak stokları güncelleyebiliyor — yani istediğin şey teknik olarak mümkün. Ama Shopier'in geliştirici portalı bu oturumdan taranamadığı için şu iki teknik detay hâlâ netleşmedi:
+Shopier'in geliştirici dokümantasyonundan (Ahmet'in kendi hesabından erişip aktardığı bilgilerle) netleşenler:
 
-1. **Sipariş webhook'unun tam JSON şeması** (ürün id, varyasyon id, adet, sipariş no hangi alan adlarıyla geliyor).
-2. **Stok güncelleme endpoint'i**: tam adres, HTTP metodu, gönderilecek JSON şeması.
+1. **Webhook aboneliği bir API çağrısıyla oluşturuluyor**, OSB'deki gibi tek bir "Bildirim URL" kutusuna yapıştırıp kaydetmek yeterli değil. Kişisel Erişim Anahtarı (PAT) kullanan hesaplar için "webhook aboneliği oluşturma" adında ayrı bir uç nokta var — tam adresi/gövdesi henüz netleşmedi, Ahmet'in developer.shopier.com'daki ilgili sayfayı bulup paylaşması gerekiyor. Abonelik oluşturulunca dönen `token` alanı, aşağıdaki imza doğrulaması için `SHOPIER_ORDER_WEBHOOK_SECRET`'a girilecek (bu token SADECE oluşturma anındaki cevapta bir kez veriliyor, kaybedilirse abonelik silinip yeniden oluşturulmalı).
+2. **Sipariş webhook'unun tam JSON şeması** (ürün id, varyasyon id, adet, sipariş no hangi alan adlarıyla geliyor) hâlâ netleşmedi — gerçek bir sipariş/test tetiklenip `data/webhook-debug.log` incelenerek çözülecek.
+3. **Stok güncelleme endpoint'i**: tam adres, HTTP metodu, gönderilecek JSON şeması hâlâ netleşmedi.
 
-**En pratik yol:** Servisi canlıya al (DRY_RUN açıkken zararsız), Shopier panelinden webhook adresini `https://<sunucu-adresin>/webhook/shopier-order` olarak tanımla, gerçek (ya da test) bir sipariş tetikle. Gelen ham veri otomatik olarak `data/webhook-debug.log`'a kaydediliyor — o dosyayı bana gönderirsen `src/shopierClient.js` içindeki iki TODO'yu tamamlarım. Bu ikisi netleşene kadar sistem hiçbir şeyi bozmaz — sadece Shopier'e yazmaz, her şeyi loglar. **Bu güncellemenin (çoklu tablo) bu kısıtla bir ilgisi yok** — tablo sistemi tamamen çalışır durumda, sadece gerçek Shopier'e otomatik yazma kısmı bu 2 bilgiyi bekliyor.
+**Öğrendiğimiz önemli bir kural:** Shopier, webhook'a **5 saniye içinde 200 OK** dönmezsen bildirimi başarısız sayıp 1dk/10dk/1sa/2sa/4sa/8sa/24sa/48sa/72sa arayla toplam 9 kez tekrar deniyor. Bunu iki şekilde hesaba kattık: (1) sunucu, gelen siparişi önce kendi veritabanında (çok hızlı) işleyip Shopier'e hemen 200 OK dönüyor, Shopier'e geri yazma işlemini cevaptan SONRA arka planda yapıyor — böylece yavaş bir dış istek yüzünden "başarısız" sayılmıyor; (2) bu tekrar deneme mekanizması, sunucunun bir an için yavaş/uykuda olması ihtimaline karşı da ekstra bir güvenlik ağı sağlıyor.
+
+**En pratik yol:** Servisi canlıya al (DRY_RUN açıkken zararsız), webhook aboneliğini/adresini `https://<sunucu-adresin>/webhook/shopier-order` olarak tanımla, gerçek (ya da test) bir sipariş tetikle. Gelen ham veri otomatik olarak `data/webhook-debug.log`'a kaydediliyor (GET, POST/JSON, POST/form-encoded — hangisi gelirse gelsin yakalanıyor) — o dosyayı bana gönderirsen `src/shopierClient.js` içindeki TODO'ları tamamlarım. Bunlar netleşene kadar sistem hiçbir şeyi bozmaz — sadece Shopier'e yazmaz, her şeyi loglar.
 
 ## Kurulum adımları (senin yapman gerekenler)
 
