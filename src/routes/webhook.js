@@ -30,11 +30,17 @@ router.get('/shopier-order', (req, res) => {
 // Shopier'in siparis oldugunda cagiracagi adres: POST /webhook/shopier-order
 // Shopier panelinde/webhook ayarlarinda bu servisin genel adresi + bu yol tanimlanmali.
 // Hem JSON hem form-encoded (eski sistemler icin) govdeyi kabul ediyoruz.
+// ONEMLI: Shopier'in kendi dokumantasyonuna gore webhook'a 5 SANIYE icinde 200 OK
+// donmezsek, bildirim basarisiz sayilip 1dk/10dk/1sa/... seklinde 9 kez tekrar
+// deneniyor. Bu yuzden: once HIZLI olan yerel hesaplamayi (SQLite) yapip HEMEN
+// 200 donuyoruz, Shopier'e GERI YAZMA (pushVariantStock - yavas olabilen dis istekler)
+// islemini cevaptan SONRA, arka planda yapiyoruz. Boylece yavas bir Shopier isteği
+// yuzunden bildirimin "basarisiz" sayilip gereksiz tekrar denemeye girmesini onluyoruz.
 router.post(
   '/shopier-order',
-  express.json({ limit: '1mb' }),
+  express.json({ limit: '1mb', verify: (req, res, buf) => { req.rawBody = buf; } }),
   express.urlencoded({ extended: true, limit: '1mb' }),
-  async (req, res) => {
+  (req, res) => {
   // ILK YAPILACAK SEY: gelen HER siparisi ham haliyle kaydet. Ilk gercek siparis
   // geldiginde data/webhook-debug.log dosyasini acip shopierClient.parseIncomingOrder'i
   // gercek alan adlarina gore kesinlestirecegiz.
@@ -52,11 +58,13 @@ router.post(
     return res.status(200).json({ ok: false, error: 'govde cozumlenemedi, debug log kontrol edilsin' });
   }
 
-  const results = [];
+  // 1. asama: SADECE yerel (SQLite) hesaplamayi yap - bu cok hizli, milisaniyeler surer.
+  const localResults = [];
+  const cellsToPush = [];
   for (const item of items) {
     const design = engine.findDesignByShopierProductId(item.shopierProductId);
     if (!design) {
-      results.push({ item, ok: false, reason: 'shopier_product_id eslesen tasarim yok - admin panelden eslestir' });
+      localResults.push({ item, ok: false, reason: 'shopier_product_id eslesen tasarim yok - admin panelden eslestir' });
       continue;
     }
 
@@ -66,7 +74,7 @@ router.post(
       .get(design.id, item.shopierVariantId);
 
     if (!mapping) {
-      results.push({ item, ok: false, reason: 'varyasyon->beden eslesmesi yok - admin panelden eslestir' });
+      localResults.push({ item, ok: false, reason: 'varyasyon->beden eslesmesi yok - admin panelden eslestir' });
       continue;
     }
 
@@ -78,26 +86,34 @@ router.post(
       });
 
       if (outcome.skipped) {
-        results.push({ item, ok: false, reason: outcome.reason });
+        localResults.push({ item, ok: false, reason: outcome.reason });
         continue;
       }
 
-      // Etkilenen tum hucreleri Shopier'e geri yaz (ayni tablodaki tum tasarimlar dahil)
-      for (const cell of outcome.cellsToPush) {
-        const variantMapping = engine.getVariantMapping(cell.designId, cell.sizeKey);
-        const shopierVariantId = variantMapping && variantMapping.shopier_variant_id;
-        const pushResult = await pushVariantStock({
-          shopierVariantId,
-          newStock: cell.effectiveStock,
-        }).catch((e) => ({ ok: false, error: e.message }));
-        results.push({ cell, pushResult });
-      }
+      localResults.push({ item, ok: true });
+      cellsToPush.push(...outcome.cellsToPush);
     } catch (e) {
-      results.push({ item, ok: false, reason: e.message });
+      localResults.push({ item, ok: false, reason: e.message });
     }
   }
 
-  res.json({ ok: true, processed: results.length, results });
+  // 2. asama: Shopier'e HEMEN cevap ver - stok zaten dogru sekilde bizim tarafta
+  // guncellendi, Shopier'i bundan haberdar etmek icin bekletmeye gerek yok.
+  res.json({ ok: true, processed: localResults.length, results: localResults });
+
+  // 3. asama: cevaptan SONRA, arka planda Shopier'e geri yaz (etkilenen tum hucreler).
+  // Burada bir hata olsa bile webhook cevabini etkilemez - sadece loglanir.
+  (async () => {
+    for (const cell of cellsToPush) {
+      const variantMapping = engine.getVariantMapping(cell.designId, cell.sizeKey);
+      const shopierVariantId = variantMapping && variantMapping.shopier_variant_id;
+      try {
+        await pushVariantStock({ shopierVariantId, newStock: cell.effectiveStock });
+      } catch (e) {
+        console.error('Webhook sonrasi Shopier push hatasi:', cell, e.message);
+      }
+    }
+  })();
 });
 
 module.exports = router;
