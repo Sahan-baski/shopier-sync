@@ -328,17 +328,21 @@ function sizeTitleMatches(sizeKey, selectionTitle) {
   return norm(selectionTitle).includes(norm(sizeKey));
 }
 
+// NOT (06.09.2026): Shopier'de /products/{id} bu hesapta 403 verdigi icin urune
+// ozel cekim yerine hesap genelindeki "beden" secimlerini (/admin/api/shopier/child-sizes)
+// cekiyoruz - Urun ID'sine ihtiyac YOK, cunku bu ID'ler gercek siparis gecmisinde
+// TUM tasarimlar arasinda ayni cikti (ortak/global). Urun ID'si mapping'i kaydederken
+// (asagida "Kaydet") hala gerekli - Shopier'e stok gonderirken hangi urunun
+// guncellenecegini belirtmek icin.
 document.getElementById('mapFetchBtn').addEventListener('click', async () => {
-  const productId = document.getElementById('mapProductId').value.trim();
   const status = document.getElementById('mapFetchStatus');
-  if (!productId) { status.textContent = 'Önce Shopier Ürün ID gir.'; return; }
   status.textContent = 'Shopier\'den çekiliyor...';
   try {
-    const r = await fetch(`/admin/api/shopier/products/${encodeURIComponent(productId)}/variants`);
-     const data = await r.json();
+    const r = await fetch(`/admin/api/shopier/child-sizes`);
+    const data = await r.json();
     if (!data.ok) { status.textContent = `Hata: ${data.error}`; return; }
-    const variants = data.variants || [];
-    if (!variants.length) { status.textContent = 'Bu üründe hiç varyasyon bulunamadı.'; return; }
+    const variants = data.sizes || [];
+    if (!variants.length) { status.textContent = 'Hiç beden seçeneği bulunamadı.'; return; }
 
     const container = document.getElementById('mapSizesContainer');
     let autoMatched = 0;
@@ -347,7 +351,7 @@ document.getElementById('mapFetchBtn').addEventListener('click', async () => {
       const currentInput = container.querySelector(`input[data-map-size="${CSS.escape(sizeKey)}"]`);
       const currentVal = currentInput ? currentInput.value.trim() : '';
       sel.innerHTML = '<option value="">— seçilmedi —</option>' +
-        variants.map(v => `<option value="${v.selectionId}">${v.selectionTitle} (stok: ${v.stockQuantity})</option>`).join('');
+        variants.map(v => `<option value="${v.selectionId}">${v.selectionTitle} (${v.variationTitle})</option>`).join('');
 
       const autoMatch = variants.find(v => sizeTitleMatches(sizeKey, v.selectionTitle));
       if (autoMatch) {
@@ -358,7 +362,7 @@ document.getElementById('mapFetchBtn').addEventListener('click', async () => {
         sel.value = currentVal;
       }
     });
-    status.textContent = `${variants.length} varyasyon bulundu, ${autoMatched} beden otomatik eşleşti. Diğerlerini elle kontrol et.`;
+    status.textContent = `${variants.length} beden seçeneği bulundu (hesap geneli), ${autoMatched} tanesi otomatik eşleşti. Diğerlerini elle kontrol et.`;
   } catch (e) {
     status.textContent = `Hata: ${e.message}`;
   }
