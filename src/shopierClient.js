@@ -75,7 +75,7 @@ async function fetchAllSelections() {
   const all = [];
   let page = 1;
   for (;;) {
-    const url = `${API_BASE}/selections?page=${page}&limit=100`;
+    const url = `${API_BASE}/selections?page=${page}&limit=50`;
     const res = await fetch(url, { headers: authHeaders() });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -95,7 +95,7 @@ async function fetchAllVariations() {
   const all = [];
   let page = 1;
   for (;;) {
-    const url = `${API_BASE}/variations?page=${page}&limit=100`;
+    const url = `${API_BASE}/variations?page=${page}&limit=50`;
     const res = await fetch(url, { headers: authHeaders() });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
