@@ -335,7 +335,7 @@ document.getElementById('mapFetchBtn').addEventListener('click', async () => {
   status.textContent = 'Shopier\'den çekiliyor...';
   try {
     const r = await fetch(`/admin/api/shopier/products/${encodeURIComponent(productId)}/variants`);
-    const data = await r.json();
+     const data = await r.json();
     if (!data.ok) { status.textContent = `Hata: ${data.error}`; return; }
     const variants = data.variants || [];
     if (!variants.length) { status.textContent = 'Bu üründe hiç varyasyon bulunamadı.'; return; }
