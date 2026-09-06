@@ -62,8 +62,10 @@
     <button id="editPoolBtn" class="secondary">✏️ Düzenle</button>
     <button id="deletePoolBtn" class="danger">🗑️ Sil</button>
     <button id="syncPoolBtn" class="secondary">🔄 Tümünü Shopier'e Gönder</button>
+    <button id="liveStockBtn" class="secondary">☁️ Shopier'deki Güncel Stoğu Çek</button>
   </div>
   <p class="sub">Tablodaki bir hücreyi değiştirdiğinde (gerçek stok veya Tasarım Stoğu) etkilenen hücreler otomatik olarak Shopier'e gönderilir. "🔄 Tümünü Shopier'e Gönder" ise bu tablodaki her şeyi elle tek seferde yeniden gönderir — ör. eşleştirmeleri yeni tamamladıktan sonra.</p>
+  <p class="sub" id="liveStockStatus" style="color:#5b6472;"></p>
 
   <div class="legend">
     <div class="box real"><strong>✏️ Gerçek Stok (siz girersiniz)</strong><br />Tablonun her bedenindeki gerçek ürün sayısı ve her tasarımın gerçek baskı/tasarım stoğu.</div>
@@ -222,7 +224,7 @@ async function loadTable() {
     const total = row.cells.reduce((a,c)=>a+c.effectiveStock,0);
     const isLinked = !!(row.design.shopier_product_id && row.cells.some(c => c.shopierVariantId));
     tr.innerHTML = `<td class="name">${row.design.name}${row.design.color ? ' <span style=\"color:#8a8f98;font-weight:normal;\">('+row.design.color+')</span>' : ''}</td>` +
-      row.cells.map(c => `<td class="computed ${stockClass(c.effectiveStock)}">${c.effectiveStock}</td>`).join('') +
+      row.cells.map(c => `<td class="computed ${stockClass(c.effectiveStock)}">${c.effectiveStock}<div class="liveNote" id="live-${row.design.id}-${c.size}" style="font-size:10px;font-weight:normal;min-height:12px;"></div></td>`).join('') +
       `<td class="total computed ${stockClass(total)}">${total}</td>` +
       `<td><input class="cell ${stockClass(row.design.design_stock)}" data-design="${row.design.id}" type="number" min="0" value="${row.design.design_stock}" /></td>` +
       `<td><button class="linkBtn${isLinked ? ' linked' : ''}" data-map="${row.design.id}">${isLinked ? '🔗 Bağlı' : '🔗 Bağla'}</button></td>`;
@@ -276,15 +278,70 @@ document.getElementById('syncPoolBtn').addEventListener('click', async () => {
     : `Tamamlandı: ${data.pushed} hücrenin hepsi gönderildi.`;
 });
 
+// Shopier'de SU AN CANLI gorunen stok sayilarini ceker (sadece okuma, hicbir sey
+// degistirmez) ve her hucrenin altina kucuk bir not olarak yazar - yesil: bizim
+// hesapladigimizla ayni, kirmizi: farkli (Shopier'de elle degisiklik yapilmis ya
+// da henuz gonderilmemis olabilir). /products erisimi acilana kadar hata verecektir.
+let liveStockTimer = null;
+
+async function loadLiveStock() {
+  if (!currentPoolId) return;
+  const status = document.getElementById('liveStockStatus');
+  if (status) status.textContent = "Shopier'den çekiliyor...";
+  try {
+    const r = await fetch(`/admin/api/pools/${currentPoolId}/live-shopier-stock`);
+    const data = await r.json();
+    if (!data.ok) {
+      if (status) status.textContent = `Hata: ${data.error || 'bilinmiyor'}`;
+      return;
+    }
+    let matched = 0, mismatched = 0;
+    const errorKeys = Object.keys(data.errors || {});
+    for (const row of currentTable) {
+      const liveSizes = data.designs ? data.designs[row.design.id] : null;
+      for (const cell of row.cells) {
+        const el = document.getElementById(`live-${row.design.id}-${cell.size}`);
+        if (!el) continue;
+        if (!liveSizes || liveSizes[cell.size] === undefined) {
+          el.textContent = '';
+          continue;
+        }
+        const liveVal = liveSizes[cell.size];
+        const same = Number(liveVal) === Number(cell.effectiveStock);
+        el.textContent = `Shopier: ${liveVal}`;
+        el.style.color = same ? '#0d6b2f' : '#b3261e';
+        if (same) matched++; else mismatched++;
+      }
+    }
+    const now = new Date().toLocaleTimeString('tr-TR');
+    if (status) {
+      status.textContent = errorKeys.length
+        ? `Son çekim: ${now} — ${matched} eşleşti, ${mismatched} farklı, ${errorKeys.length} tasarımda hata (${data.errors[errorKeys[0]]})`
+        : `Son çekim: ${now} — ${matched} eşleşti, ${mismatched} farklı.`;
+    }
+  } catch (e) {
+    if (status) status.textContent = `Hata: ${e.message}`;
+  }
+}
+
+function startLiveStockAutoRefresh() {
+  if (liveStockTimer) clearInterval(liveStockTimer);
+  liveStockTimer = setInterval(loadLiveStock, 5 * 60 * 1000); // 5 dakikada bir otomatik
+}
+
+document.getElementById('liveStockBtn').addEventListener('click', loadLiveStock);
+
 async function refreshAll() {
   await loadMode();
   await loadPools();
   await loadTable();
+  await loadLiveStock();
+  startLiveStockAutoRefresh();
 }
 
 document.getElementById('poolSelect').addEventListener('change', (e) => {
   currentPoolId = Number(e.target.value);
-  loadTable();
+  loadTable().then(loadLiveStock);
 });
 
 document.getElementById('body').addEventListener('click', (e) => {
@@ -386,6 +443,7 @@ document.getElementById('mapSubmit').addEventListener('click', async () => {
   }
   closeModals();
   await loadTable();
+  await loadLiveStock();
   document.getElementById('msg').textContent = 'Shopier eşleştirmesi kaydedildi.';
 });
 
@@ -439,7 +497,7 @@ document.getElementById('deletePoolBtn').addEventListener('click', async () => {
   await loadTable();
 });
 
-document.getElementById('refreshBtn').addEventListener('click', () => loadTable());
+document.getElementById('refreshBtn').addEventListener('click', () => loadTable().then(loadLiveStock));
 
 document.getElementById('sellBtn').addEventListener('click', async () => {
   const designId = document.getElementById('designSel').value;
