@@ -151,6 +151,36 @@ router.get('/shopier/products/:productId/variants', async (req, res) => {
   }
 });
 
+// YENI: Bu tablodaki (havuzdaki) TUM tasarimlarin Shopier'de SU AN CANLI gorunen
+// stok sayilarini ceker - hicbir sey DEGISTIRMEZ, sadece okur (GET /products/{id}).
+// /products erisimi 403 verdigi surece bu da calismaz, ama erisim acilinca ekstra
+// kod degisikligine gerek kalmadan calismaya baslar. Admin panelinde "☁️ Shopier'deki
+// Güncel Stoğu Çek" butonu ve sayfa acilirken/periyodik olarak bunu cagirir.
+router.get('/pools/:poolId/live-shopier-stock', async (req, res) => {
+  const poolId = Number(req.params.poolId);
+  const { table } = engine.getStockTable(poolId);
+  const designs = {};
+  const errors = {};
+  for (const row of table) {
+    const design = row.design;
+    if (!design.shopier_product_id) continue;
+    try {
+      const { variants } = await fetchProduct(design.shopier_product_id);
+      const bySelection = new Map(variants.map((v) => [String(v.selectionId), v.stockQuantity]));
+      const sizes = {};
+      for (const cell of row.cells) {
+        if (cell.shopierVariantId && bySelection.has(String(cell.shopierVariantId))) {
+          sizes[cell.size] = bySelection.get(String(cell.shopierVariantId));
+        }
+      }
+      designs[design.id] = sizes;
+    } catch (e) {
+      errors[design.id] = e.message;
+    }
+  }
+  res.json({ ok: true, designs, errors });
+});
+
 // YENI (06.09.2026): /products/{id} bu hesapta 403 verdigi icin urune ozel cekim
 // calismiyor. Bunun yerine hesap genelindeki TUM "beden" secimlerini (ör. "3-4 Yaş")
 // /selections + /variations uzerinden ceker - urun ID'sine ihtiyac YOK, cunku bu
