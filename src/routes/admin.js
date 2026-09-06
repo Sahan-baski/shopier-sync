@@ -1,6 +1,6 @@
 const express = require('express');
 const engine = require('../stockEngine');
-const { pushVariantStock, fetchProduct, DRY_RUN } = require('../shopierClient');
+const { pushVariantStock, fetchProduct, fetchChildSizeSelections, DRY_RUN } = require('../shopierClient');
 
 const router = express.Router();
 router.use(express.json());
@@ -146,6 +146,19 @@ router.get('/shopier/products/:productId/variants', async (req, res) => {
   try {
     const { variants } = await fetchProduct(req.params.productId);
     res.json({ ok: true, variants });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// YENI (06.09.2026): /products/{id} bu hesapta 403 verdigi icin urune ozel cekim
+// calismiyor. Bunun yerine hesap genelindeki TUM "beden" secimlerini (ör. "3-4 Yaş")
+// /selections + /variations uzerinden ceker - urun ID'sine ihtiyac YOK, cunku bu
+// ID'ler gercek siparis gecmisinde TUM tasarimlar arasinda ayni cikti (ortak/global).
+router.get('/shopier/child-sizes', async (req, res) => {
+  try {
+    const sizes = await fetchChildSizeSelections();
+    res.json({ ok: true, sizes });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
   }
