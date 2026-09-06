@@ -58,6 +58,80 @@ async function fetchProduct(shopierProductId) {
 }
 
 /**
+ * ONEMLI KESIF (06.09.2026): GET/PUT /products/{id} bu hesapta 403 Forbidden donuyor
+ * (hem Node fetch hem raw curl ile dogrulandi - Shopier destegine bildirilecek), FAKAT
+ * /selections, /variations ve /orders ayni PAT ile calisiyor. Gercek siparis gecmisi
+ * incelendiginde, "Çocuk Tişört Beden" varyasyonu altindaki secenek (selection) ID'lerinin
+ * TUM tasarimlar arasinda ORTAK/GLOBAL oldugu dogrulandi (ayni "3-4 Yaş" ID'si 6 farkli
+ * urunde ayni cikti). Yani beden ID'lerini urune ozel GET /products/{id} yerine, hesap
+ * genelindeki /selections listesinden BIR KERE cekip her tasarima uygulayabiliriz.
+ *
+ * fetchAllSelections/fetchAllVariations: sayfalama header'larini (shopier-pagination-*)
+ * takip ederek TUM sayfalari gezip birlestirir - Shopier'in limit parametresini
+ * yoksaymasi ihtimaline karsi da guvenli calisir.
+ */
+async function fetchAllSelections() {
+  if (!ACCESS_KEY) throw new Error('SHOPIER_ACCESS_KEY tanimli degil (.env dosyasina gir).');
+  const all = [];
+  let page = 1;
+  for (;;) {
+    const url = `${API_BASE}/selections?page=${page}&limit=100`;
+    const res = await fetch(url, { headers: authHeaders() });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Shopier /selections hatasi (${res.status}): ${text}`);
+    }
+    const data = await res.json();
+    all.push(...data);
+    const totalPages = Number(res.headers.get('shopier-pagination-total-pages') || 1);
+    if (!data.length || page >= totalPages) break;
+    page++;
+  }
+  return all;
+}
+
+async function fetchAllVariations() {
+  if (!ACCESS_KEY) throw new Error('SHOPIER_ACCESS_KEY tanimli degil (.env dosyasina gir).');
+  const all = [];
+  let page = 1;
+  for (;;) {
+    const url = `${API_BASE}/variations?page=${page}&limit=100`;
+    const res = await fetch(url, { headers: authHeaders() });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Shopier /variations hatasi (${res.status}): ${text}`);
+    }
+    const data = await res.json();
+    all.push(...data);
+    const totalPages = Number(res.headers.get('shopier-pagination-total-pages') || 1);
+    if (!data.length || page >= totalPages) break;
+    page++;
+  }
+  return all;
+}
+
+/**
+ * "Beden" iceren TUM varyasyon boyutlarinin (ör. "Çocuk Tişört Beden", "Çocuk Beden")
+ * altindaki secenekleri (3-4 Yaş, 5-6 Yaş, ...) tek listede doner. Urun ID'sine ihtiyac
+ * YOK - bu liste hesap genelinde ortak. Donen her eleman: {selectionId, selectionTitle, variationId, variationTitle}.
+ */
+async function fetchChildSizeSelections() {
+  const [selections, variations] = await Promise.all([fetchAllSelections(), fetchAllVariations()]);
+  const sizeVariations = variations.filter((v) => /beden/i.test(v.title || ''));
+  const sizeVariationIds = new Set(sizeVariations.map((v) => v.id));
+  const titleById = new Map(sizeVariations.map((v) => [v.id, v.title]));
+
+  return selections
+    .filter((s) => sizeVariationIds.has(s.variationId))
+    .map((s) => ({
+      selectionId: s.id,
+      selectionTitle: s.title,
+      variationId: s.variationId,
+      variationTitle: titleById.get(s.variationId) || '',
+    }));
+}
+
+/**
  * Shopier'den gelen siparis webhook govdesini {shopierProductId, shopierVariantId, qty, orderRef} listesine cevirir.
  * NETLESTI (gercek "order.created" webhook'undan alinan ornek ile): govde su sekilde geliyor:
  *   { id: "784630780", lineItems: [
@@ -175,4 +249,13 @@ function verifyWebhookSignature(req) {
   return provided === computedHex || provided === computedBase64;
 }
 
-module.exports = { parseIncomingOrder, pushVariantStock, verifyWebhookSignature, fetchProduct, DRY_RUN };
+module.exports = {
+  parseIncomingOrder,
+  pushVariantStock,
+  verifyWebhookSignature,
+  fetchProduct,
+  fetchAllSelections,
+  fetchAllVariations,
+  fetchChildSizeSelections,
+  DRY_RUN,
+};
