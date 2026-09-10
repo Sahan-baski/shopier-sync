@@ -1,0 +1,70 @@
+.mos-wrap .mos-card {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    padding: 16px 20px;
+    margin: 12px 0 20px;
+    max-width: 1200px;
+}
+
+.mos-wrap .mos-columns {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+}
+
+.mos-wrap .mos-col {
+    flex: 1 1 420px;
+    min-width: 320px;
+}
+
+.mos-stock-table th,
+.mos-stock-table td {
+    vertical-align: top;
+    padding: 10px;
+}
+
+.mos-eff-stock {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #2271b1;
+}
+
+.mos-eff-stock.mos-eff-zero {
+    color: #d63638;
+    font-weight: 600;
+}
+
+.mos-shopier-select {
+    display: block;
+    margin-top: 6px;
+    max-width: 220px;
+    border-color: #9c6ee0;
+}
+
+.mos-search-results {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    max-width: 400px;
+    border: 1px solid #ccd0d4;
+    background: #fff;
+}
+
+.mos-search-results li {
+    padding: 6px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f1;
+}
+
+.mos-search-results li:hover {
+    background: #f0f6fc;
+}
+
+.mos-search-results li.mos-disabled {
+    color: #999;
+    cursor: not-allowed;
+}
+
+.mos-search-results:empty {
+    border: none;
+}
